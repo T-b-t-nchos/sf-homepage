@@ -10,7 +10,9 @@ type Props = {
     size?: Size;
     href?: string;
     to?: string;
-    onClick?: () => void;
+    onClick?: React.MouseEventHandler<HTMLButtonElement>;
+    type?: "button" | "submit" | "reset";
+    disabled?: boolean;
     className?: string;
     children: React.ReactNode;
 };
@@ -37,10 +39,20 @@ export default function Button({
     href,
     to,
     onClick,
+    type = "button",
+    disabled = false,
     children,
     className: extraClassName = "",
 }: Props) {
-    const className = `${base} ${sizeStyles[size]} ${styles[variant]} ${extraClassName}`;
+    const className = [
+        base,
+        sizeStyles[size],
+        styles[variant],
+        disabled ? "opacity-60 cursor-not-allowed" : "",
+        extraClassName,
+    ]
+        .filter(Boolean)
+        .join(" ");
 
     // Internal navigation using React Router
     if (to) {
@@ -61,7 +73,7 @@ export default function Button({
     }
 
     return (
-        <button type="button" className={className} onClick={onClick}>
+        <button type={type} className={className} onClick={onClick} disabled={disabled}>
             {children}
         </button>
     );

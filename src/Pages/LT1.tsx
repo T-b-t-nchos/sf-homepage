@@ -53,7 +53,7 @@ export default function LT1() {
                                                         Discord開催（オンライン）
                                                     </p>
                                                     <p className="mt-2 text-sm leading-6 text-gray-600">
-                                                        参加登録後にDiscord招待リンクをお送りします。当日は開始5分前からチェックインできます。
+                                                        当日は開始5分前からチェックインできます。
                                                     </p>
                                                 </div>
                                             )}

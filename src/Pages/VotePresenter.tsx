@@ -1,25 +1,113 @@
 import { Link } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Button from "../Components/ui/Button";
+import { lt1Presenters } from "../../shared/lt1Presenters";
 
-type Presenter = {
+type AuthUser = {
     id: string;
-    name: string;
-    title: string;
+    username: string;
+    globalName?: string | null;
 };
-
-const mockPresenters: Presenter[] = [
-    { id: "tbd-1", name: "Coming Soon", title: "募集中" },
-    { id: "tbd-2", name: "Coming Soon", title: "募集中" },
-];
 
 export default function VotePresenter() {
     const [selected, setSelected] = useState<string | null>(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [hasVoted, setHasVoted] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-    const submitVote = () => {
-        if (!selected) return;
-        alert(`投票しました: ${selected}`);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [user, setUser] = useState<AuthUser | null>(null);
+
+    const activePresenters = lt1Presenters.filter((p) => p.status === "active");
+
+    useEffect(() => {
+        let active = true;
+        setAuthLoading(true);
+
+        fetch("/api/auth/status", { credentials: "include" })
+            .then(async (res) => {
+                if (!active) return;
+                if (!res.ok) {
+                    setUser(null);
+                    return;
+                }
+                const data = (await res.json()) as { user?: AuthUser };
+                setUser(data.user ?? null);
+            })
+            .catch(() => {
+                if (active) setUser(null);
+            })
+            .finally(() => {
+                if (active) setAuthLoading(false);
+            });
+
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    const handleLogin = () => {
+        window.location.href = "/api/auth/login";
     };
+
+    const submitVote = async () => {
+        if (!selected || !user) return;
+
+        setIsSubmitting(true);
+        setError(null);
+
+        const presenter = activePresenters.find((p) => p.id === selected);
+        if (!presenter) {
+            setIsSubmitting(false);
+            setError("Presenter not found.");
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/lt1/vote", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    presenterId: presenter.id,
+                    presenterName: presenter.name,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = (await res.json().catch(() => ({}))) as { error?: string };
+                throw new Error(data.error || "投票に失敗しました。");
+            }
+
+            setHasVoted(true);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "投票に失敗しました。");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    if (hasVoted) {
+        return (
+            <div className="min-h-screen bg-white flex items-center justify-center">
+                <div className="text-center px-4">
+                    <div className="text-5xl mb-4">🗳️</div>
+                    <h1 className="text-2xl font-bold text-gray-900 mb-2">
+                        投票ありがとうございます！
+                    </h1>
+                    <p className="text-gray-600 mb-6">
+                        あなたの声がイベントを盛り上げます。
+                    </p>
+                    <Link
+                        to="/events/lt-1"
+                        className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                    >
+                        イベントページに戻る
+                    </Link>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-white">
@@ -42,21 +130,42 @@ export default function VotePresenter() {
                     いちばん良かった登壇者に投票
                 </h1>
                 <p className="mt-2 text-sm text-gray-600">
-                    1人を選んで投票してください（暫定）。
+                    「これだ！」と思った1人を選んで投票してください。
                 </p>
 
+                <div className="mt-6">
+                    {authLoading ? (
+                        <p className="text-sm text-gray-500">読み込み中...</p>
+                    ) : user ? (
+                        <p className="text-sm text-gray-600">
+                            ログイン中: <span className="font-medium">{user.globalName || user.username}</span>
+                        </p>
+                    ) : (
+                        <div className="rounded-xl bg-orange-50 p-4 border border-orange-100">
+                            <p className="text-sm text-orange-800 mb-2">
+                                投票するにはDiscordログインが必要です。
+                            </p>
+                            <Button variant="primary" onClick={handleLogin}>
+                                Discordでログイン
+                            </Button>
+                        </div>
+                    )}
+                </div>
+
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                    {mockPresenters.map((p) => {
+                    {activePresenters.map((p) => {
                         const active = selected === p.id;
                         return (
                             <button
                                 key={p.id}
                                 onClick={() => setSelected(p.id)}
+                                disabled={!user || isSubmitting}
                                 className={[
                                     "rounded-2xl border p-6 text-left transition",
                                     active
-                                        ? "border-gray-900 ring-2 ring-gray-900"
+                                        ? "border-indigo-600 ring-2 ring-indigo-600 bg-indigo-50"
                                         : "border-gray-200 hover:bg-gray-50",
+                                    !user ? "opacity-50 cursor-not-allowed" : "",
                                 ].join(" ")}
                             >
                                 <div className="text-sm font-semibold text-gray-900">{p.name}</div>
@@ -66,9 +175,19 @@ export default function VotePresenter() {
                     })}
                 </div>
 
-                <div className="mt-6">
-                    <Button variant="primary" onClick={submitVote}>
-                        投票する
+                {error && (
+                    <div className="mt-6 rounded-xl bg-red-50 p-4">
+                        <p className="text-sm text-red-800">{error}</p>
+                    </div>
+                )}
+
+                <div className="mt-8">
+                    <Button
+                        variant="primary"
+                        onClick={submitVote}
+                        disabled={!selected || isSubmitting || !user}
+                    >
+                        {isSubmitting ? "送信中..." : "投票する"}
                     </Button>
                 </div>
             </main>
