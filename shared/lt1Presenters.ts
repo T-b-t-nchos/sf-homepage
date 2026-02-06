@@ -2,11 +2,19 @@ export type Lt1Presenter = {
   id: string;
   name: string;
   title: string;
+  ownerDiscordId?: string;
+  discordId?: string;
   status: "active" | "cancelled";
-  discordId?: string; // Optional: Link to Discord user for self-service cancellation
 };
 
 export const lt1Presenters: Lt1Presenter[] = [
-  { id: "tbd-1", name: "Coming Soon", title: "TBD", status: "active", discordId: "957974197953511524" },
+  {
+    id: "tbd-1",
+    name: "Coming Soon",
+    title: "TBD",
+    ownerDiscordId: "957974197953511524",
+    discordId: "957974197953511524",
+    status: "active",
+  },
   { id: "tbd-2", name: "Coming Soon", title: "TBD", status: "active" },
 ];

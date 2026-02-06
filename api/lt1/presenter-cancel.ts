@@ -2,15 +2,40 @@ import { isStrongSessionSecret, readSession } from "../_lib/session.js";
 import { PayloadTooLargeError, readJson, sendJson } from "../_lib/http.js";
 import { checkRateLimit } from "../_lib/rateLimit.js";
 import { enforceCsrf, enforceJson } from "../_lib/requestGuard.js";
-import { lt1Presenters } from "../../shared/lt1Presenters.js";
+import { lt1Presenters, type Lt1Presenter } from "../../shared/lt1Presenters.js";
+import { enforceFeatureEnabled } from "../_lib/featureFlag.js";
 
 type CancelPayload = {
   presenterId: string;
   reason?: string;
 };
 
-const sanitizeLog = (value: string) => value.replace(/[\x00-\x1F\x7F]/g, "");
+const sanitizeLog = (value: string) =>
+  Array.from(value)
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("");
 const presentersById = new Map(lt1Presenters.map((presenter) => [presenter.id, presenter]));
+
+function parseAdminIds() {
+  const raw = process.env.LT1_CANCEL_ADMIN_IDS ?? process.env.ADMIN_DISCORD_IDS ?? "";
+  return new Set(
+    raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+}
+
+function canCancelPresenter(sessionUserId: string, presenter: Lt1Presenter) {
+  const adminIds = parseAdminIds();
+  if (adminIds.has(sessionUserId)) {
+    return true;
+  }
+  return (presenter.ownerDiscordId ?? presenter.discordId) === sessionUserId;
+}
 
 function validateWebhookUrl(raw: string) {
   const parsed = new URL(raw);
@@ -27,6 +52,9 @@ export default async function handler(
 ) {
   if (req.method !== "POST") {
     return sendJson(res, 405, { error: "Method not allowed." });
+  }
+  if (!enforceFeatureEnabled(res, "LT1_PRESENTER_CANCEL_ENABLED", false)) {
+    return;
   }
   if (!enforceCsrf(req, res)) {
     return;
@@ -78,14 +106,8 @@ export default async function handler(
   if (!presenter) {
     return sendJson(res, 400, { error: "Unknown presenter." });
   }
-
-  // Permission Check: Admin or Self-service
-  const adminIds = (process.env.ADMIN_DISCORD_IDS ?? "").split(",").map(id => id.trim());
-  const isUserAdmin = adminIds.includes(session.sub);
-  const isUserPresenter = presenter.discordId === session.sub;
-
-  if (!isUserAdmin && !isUserPresenter) {
-    return sendJson(res, 403, { error: "You do not have permission to cancel this presenter." });
+  if (!canCancelPresenter(session.sub, presenter)) {
+    return sendJson(res, 403, { error: "You are not allowed to cancel this presenter." });
   }
 
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL;

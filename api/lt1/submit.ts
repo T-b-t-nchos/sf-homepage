@@ -3,31 +3,21 @@ import { findForbiddenReason } from "../_lib/validation.js";
 import { PayloadTooLargeError, readJson, sendJson } from "../_lib/http.js";
 import { checkRateLimit } from "../_lib/rateLimit.js";
 import { enforceCsrf, enforceJson } from "../_lib/requestGuard.js";
+import { enforceFeatureEnabled } from "../_lib/featureFlag.js";
+import { getTrustedIp } from "../_lib/trustedIp.js";
 
 type SubmitPayload = {
   title?: string;
   description?: string;
 };
 
-const sanitizeLog = (value: string) => value.replace(/[\x00-\x1F\x7F]/g, "");
-const TRUST_PROXY_ENABLED = process.env.TRUST_PROXY === "true";
-
-function getTrustedIp(req: { headers?: Record<string, string | undefined> }) {
-  if (!TRUST_PROXY_ENABLED) {
-    return "";
-  }
-  const vercel = req.headers?.["x-vercel-forwarded-for"];
-  if (vercel) {
-    return vercel.split(",")[0]?.trim() ?? "";
-  }
-
-  const cf = req.headers?.["cf-connecting-ip"];
-  if (cf) {
-    return cf.trim();
-  }
-
-  return "";
-}
+const sanitizeLog = (value: string) =>
+  Array.from(value)
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("");
 
 function validateWebhookUrl(raw: string) {
   const parsed = new URL(raw);
@@ -44,6 +34,9 @@ export default async function handler(
 ) {
   if (req.method !== "POST") {
     return sendJson(res, 405, { error: "Method not allowed." });
+  }
+  if (!enforceFeatureEnabled(res, "LT1_SUBMIT_ENABLED", true)) {
+    return;
   }
   if (!enforceCsrf(req, res)) {
     return;
@@ -72,7 +65,7 @@ export default async function handler(
     return sendJson(res, 429, { error: "Rate limit exceeded." });
   }
 
-  const trustedIp = getTrustedIp(req);
+  const trustedIp = getTrustedIp(req.headers);
   if (trustedIp) {
     const ipKey = `lt1:submit-ip:${trustedIp}`;
     const ipLimit = checkRateLimit(ipKey, { limit: 30, windowMs: 10 * 60 * 1000 });

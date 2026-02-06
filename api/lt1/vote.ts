@@ -4,14 +4,42 @@ import { checkRateLimit } from "../_lib/rateLimit.js";
 import { enforceCsrf, enforceJson } from "../_lib/requestGuard.js";
 import { serializeCookie, parseCookies } from "../_lib/cookies.js";
 import { lt1Presenters } from "../../shared/lt1Presenters.js";
+import { VoteStoreUnavailableError, releaseVoteSlot, reserveVoteSlot } from "../_lib/voteStore.js";
+import { enforceFeatureEnabled } from "../_lib/featureFlag.js";
+import { getTrustedIp } from "../_lib/trustedIp.js";
 
 type VotePayload = {
     presenterId: string;
     presenterName?: string;
 };
 
-const sanitizeLog = (value: string) => value.replace(/[\x00-\x1F\x7F]/g, "");
+const EVENT_ID = "lt1";
+const VOTE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const sanitizeLog = (value: string) =>
+    Array.from(value)
+        .filter((char) => {
+            const code = char.charCodeAt(0);
+            return code >= 0x20 && code !== 0x7f;
+        })
+        .join("");
 const presentersById = new Map(lt1Presenters.map((presenter) => [presenter.id, presenter]));
+
+function isSecureVoteCookie() {
+    if (process.env.NODE_ENV === "production") {
+        return true;
+    }
+    const baseUrl = process.env.APP_BASE_URL ?? "";
+    return baseUrl.startsWith("https://");
+}
+
+function getVoteCookieName() {
+    return isSecureVoteCookie() ? "__Host-lt1_voted" : "lt1_voted";
+}
+
+function hasVotedCookie(rawCookieHeader?: string) {
+    const cookies = parseCookies(rawCookieHeader);
+    return Boolean(cookies["lt1_voted"] || cookies["__Host-lt1_voted"]);
+}
 
 function validateWebhookUrl(raw: string) {
     const parsed = new URL(raw);
@@ -28,6 +56,9 @@ export default async function handler(
 ) {
     if (req.method !== "POST") {
         return sendJson(res, 405, { error: "Method not allowed." });
+    }
+    if (!enforceFeatureEnabled(res, "LT1_VOTE_ENABLED", false)) {
+        return;
     }
     if (!enforceCsrf(req, res)) {
         return;
@@ -46,17 +77,30 @@ export default async function handler(
         return sendJson(res, 401, { error: "Sign in with Discord first." });
     }
 
-    // Check Cookie for previous vote
-    const cookies = parseCookies(req.headers?.cookie);
-    if (cookies["lt1_voted"]) {
+    // Fast-path check. Authoritative duplicate prevention is done in voteStore.
+    if (hasVotedCookie(req.headers?.cookie)) {
         return sendJson(res, 409, { error: "You have already voted." });
     }
 
-    // Rate Limit (Strict)
+    // Throttle repeated requests from the same account.
     const userKey = `lt1:vote:${session.sub}`;
-    const userLimit = checkRateLimit(userKey, { limit: 1, windowMs: 24 * 60 * 60 * 1000 }); // 1 vote per day (effectively once)
+    const userLimit = checkRateLimit(userKey, { limit: 10, windowMs: 10 * 60 * 1000 });
     if (!userLimit.allowed) {
-        return sendJson(res, 429, { error: "You have already voted." });
+        return sendJson(res, 429, { error: "Rate limit exceeded." });
+    }
+    const trustedIp = getTrustedIp(req.headers);
+    if (trustedIp) {
+        const ipKey = `lt1:vote-ip:${trustedIp}`;
+        const ipLimit = checkRateLimit(ipKey, { limit: 20, windowMs: 10 * 60 * 1000 });
+        if (!ipLimit.allowed) {
+            return sendJson(res, 429, { error: "Rate limit exceeded." });
+        }
+    } else {
+        const globalKey = "lt1:vote-global";
+        const globalLimit = checkRateLimit(globalKey, { limit: 120, windowMs: 10 * 60 * 1000 });
+        if (!globalLimit.allowed) {
+            return sendJson(res, 429, { error: "Rate limit exceeded." });
+        }
     }
 
     let body: VotePayload;
@@ -84,14 +128,29 @@ export default async function handler(
         return sendJson(res, 400, { error: "Presenter is not available." });
     }
 
+    let reserved = false;
+    try {
+        reserved = await reserveVoteSlot(EVENT_ID, session.sub);
+    } catch (error) {
+        if (error instanceof VoteStoreUnavailableError) {
+            return sendJson(res, 503, { error: "Vote system is temporarily unavailable." });
+        }
+        return sendJson(res, 500, { error: "Failed to process vote." });
+    }
+    if (!reserved) {
+        return sendJson(res, 409, { error: "You have already voted." });
+    }
+
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
+        await releaseVoteSlot(EVENT_ID, session.sub);
         return sendJson(res, 500, { error: "Webhook is not configured." });
     }
     let parsedWebhookUrl: URL;
     try {
         parsedWebhookUrl = validateWebhookUrl(webhookUrl);
     } catch {
+        await releaseVoteSlot(EVENT_ID, session.sub);
         return sendJson(res, 500, { error: "Invalid webhook configuration." });
     }
 
@@ -117,6 +176,7 @@ export default async function handler(
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
+    let webhookSucceeded = false;
     try {
         const response = await fetch(parsedWebhookUrl.toString(), {
             method: "POST",
@@ -132,20 +192,24 @@ export default async function handler(
             console.error(`[LT1] Vote webhook failed: ${response.status}`);
             return sendJson(res, 502, { error: "Failed to record vote." });
         }
+        webhookSucceeded = true;
     } catch (err) {
         console.error(`[LT1] Vote webhook error: ${err}`);
         return sendJson(res, 502, { error: "Failed to record vote." });
     } finally {
+        if (!webhookSucceeded) {
+            await releaseVoteSlot(EVENT_ID, session.sub);
+        }
         clearTimeout(timeout);
     }
 
     // Set Cookie to prevent re-vote
-    res.setHeader("Set-Cookie", serializeCookie("lt1_voted", "true", {
+    res.setHeader("Set-Cookie", serializeCookie(getVoteCookieName(), "true", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: isSecureVoteCookie(),
         sameSite: "Lax",
         path: "/",
-        maxAge: 60 * 60 * 24 * 30, // 30 days
+        maxAge: VOTE_COOKIE_MAX_AGE_SECONDS,
     }));
 
     return sendJson(res, 200, { ok: true });
