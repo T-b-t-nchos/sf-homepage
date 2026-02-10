@@ -28,7 +28,7 @@ export const routes: Array<RouteType> = [
     meta: { visibleInNav: false } 
   },
   { 
-    path: "/", element: <Join />, 
+    path: "/join", element: <Join />, 
     meta: { title: "Join", navLabel: "Join", visibleInNav: true } 
   },
   {
