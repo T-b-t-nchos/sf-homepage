@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { HasChildrenRoute, BaseRoute } from "./types/routes";
 import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
 import MetaHandler from "./Components/handler/Metahandler";
 import Join from "./Pages/Join";
@@ -8,22 +8,9 @@ import VotePresenter from "./Pages/VotePresenter";
 
 const isVotePageEnabled = import.meta.env.VITE_LT1_VOTE_ENABLED === "true";
 
-type RouteMeta = {
-  title?: string;
-  navLabel?: string;
-  visibleInNav?: boolean;
-  protected?: boolean;
-};
 
-type RouteType = {
-  path: string;
-  element: ReactNode;
-  meta?: RouteMeta;
 
-  children?: Array<RouteType>;
-};
-
-const routes: Array<RouteType> = [
+const routes: Array<HasChildrenRoute> = [
   { 
     path: "/", element: <Navigate to="/events/lt-1" replace />, 
     meta: { visibleInNav: false } 
@@ -63,20 +50,20 @@ function joinPaths(parent: string, child: string) {
   return `${p}/${child}`.replace(/\/+/g, "/");
 }
 
-function flattenRoutes(route: RouteType, parent = ""): Array<RouteType> {
+function flattenRoutes(route: HasChildrenRoute, parent = ""): Array<BaseRoute> {
   const fullPath = joinPaths(parent, route.path);
-  const me: RouteType = { path: fullPath, element: route.element, meta: route.meta };
+  const me: BaseRoute = { path: fullPath, element: route.element, meta: route.meta };
   const kids = route.children ? route.children.flatMap((child) => flattenRoutes(child, fullPath)) : [];
   return [me, ...kids];
 }
 
-export const flatRoutes: Array<RouteType> = routes.flatMap((route) => flattenRoutes(route, ""));
+export const flatRoutes: Array<BaseRoute> = routes.flatMap((route) => flattenRoutes(route, ""));
 
 function App() {
   return (
     <BrowserRouter>
       <MetaHandler />
-      
+
       <Routes>
         {flatRoutes.map((r) => (
           <Route key={r.path} path={r.path} element={r.element} />
